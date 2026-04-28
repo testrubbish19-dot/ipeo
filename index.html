@@ -2,7 +2,8 @@
 <html>
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>社交電池：仙階進化版</title>
+    <link rel="manifest" href="manifest.json">
+    <title>社交電池：仙人最終修正版</title>
     <style>
         body { margin: 0; display: flex; flex-direction: column; align-items: center; background: #f0f0f0; font-family: sans-serif; touch-action: none; overflow: hidden; }
         #game-container { position: relative; width: 300px; height: 300px; border: 2px solid #333; margin-top: 20px; overflow: hidden; background: white; box-shadow: 0 4px 10px rgba(0,0,0,0.2); }
@@ -11,7 +12,7 @@
         #battery { width: 40px; height: 18px; border: 2px solid #333; position: relative; display: flex; }
         .cell { flex: 1; margin: 1px; background: #4CAF50; }
         #timer { position: absolute; top: 10px; left: 10px; font-weight: bold; background: rgba(255,255,255,0.8); padding: 2px 5px; display: none; border-radius: 3px; }
-        #joystick-container { width: 120px; height: 120px; background: rgba(0,0,0,0.1); border-radius: 50%; margin: 30px; position: relative; border: 2px solid #ccc; }
+        #joystick-container { width: 120px; height: 120px; background: rgba(0,0,0,0.1); border-radius: 50%; margin: 30px; position: relative; border: 2px solid #ccc; touch-action: none; }
         #joystick-handle { width: 50px; height: 50px; background: rgba(0,0,0,0.5); border-radius: 50%; position: absolute; top: 35px; left: 35px; pointer-events: none; }
         #overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); color: white; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; z-index: 10; }
         .stat-line { font-size: 14px; margin: 2px 0; color: #bbb; }
@@ -27,9 +28,7 @@
         <canvas id="gameCanvas" width="300" height="300"></canvas>
         <div id="overlay">
             <h2 id="msg">仙人下凡</h2>
-            <div id="stats-content">
-                <p id="result">點擊按鈕開始修煉</p>
-            </div>
+            <div id="stats-content"><p id="result">點擊按鈕開始修煉</p></div>
             <button id="actionBtn" onclick="startGame()">本仙人下凡了哈哈哈</button>
         </div>
     </div>
@@ -44,7 +43,6 @@
 
         let player, npcs, battery, startTime, gameActive = false, items, npcSpawnTimer, idleTimer, audioCtx;
 
-        // --- 根據最新規則計算仙階 ---
         function getRankInfo(s) {
             if (s <= 30) return { title: "凡間路人", desc: "（修為尚淺）" };
             if (s <= 50) return { title: "初級仙人", desc: "（初窺門徑）" };
@@ -82,7 +80,7 @@
             const loop = () => {
                 if (!gameActive) return;
                 let now = audioCtx.currentTime;
-                playNote(scale[step % 4] / 2, now, secondsPerBeat * 2, 0.03);
+                playNote(scale[step % 4] / 2, now, secondsPerBeat * 2, 0.02);
                 playNote(scale[(step + 2) % 4], now + secondsPerBeat, secondsPerBeat, 0.01);
                 step++; setTimeout(loop, secondsPerBeat * 1000);
             };
@@ -114,28 +112,30 @@
             cells.forEach((c, i) => c.style.visibility = i < battery ? 'visible' : 'hidden');
         }
 
+        // --- 修正後的觸控/滑鼠整合邏輯 ---
         let joyX = 0, joyY = 0, dragging = false;
+        const joyCont = document.getElementById('joystick-container');
+
         const handleMove = (e) => {
-            if (!gameActive || player.isGreeting) return;
-            const rect = document.getElementById('joystick-container').getBoundingClientRect();
-            const touch = (e.touches && e.touches) || e;
-            let dx = touch.clientX - (rect.left + rect.width/2);
-            let dy = touch.clientY - (rect.top + rect.height/2);
-            const dist = Math.sqrt(dx*dx + dy*dy);
-            if (dist > rect.width/2) { dx *= (rect.width/2)/dist; dy *= (rect.width/2)/dist; }
-            if (dragging) {
-                joyX = dx / (rect.width/2); joyY = dy / (rect.width/2);
-                joyHandle.style.transform = `translate(${dx}px, ${dy}px)`;
-                player.isMoving = dist > 5;
-                if (player.isMoving) player.angle = Math.atan2(dy, dx);
-            }
+            if (!dragging || !gameActive || player.isGreeting) return;
+            if (e.cancelable) e.preventDefault();
+            const touch = e.touches ? e.touches[0] : e;
+            const rect = joyCont.getBoundingClientRect();
+            let dx = touch.clientX - (rect.left + rect.width / 2);
+            let dy = touch.clientY - (rect.top + rect.height / 2);
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const limit = rect.width / 2;
+            if (dist > limit) { dx *= limit / dist; dy *= limit / dist; }
+            joyX = dx / limit; joyY = dy / limit;
+            joyHandle.style.transform = `translate(${dx}px, ${dy}px)`;
+            player.isMoving = dist > 5;
+            if (player.isMoving) player.angle = Math.atan2(dy, dx);
         };
 
-        const joyCont = document.getElementById('joystick-container');
-        joyCont.addEventListener('mousedown', () => dragging = true);
-        joyCont.addEventListener('touchstart', (e) => { dragging = true; handleMove(e); e.preventDefault(); }, {passive: false});
+        joyCont.addEventListener('mousedown', (e) => { dragging = true; handleMove(e); });
+        joyCont.addEventListener('touchstart', (e) => { dragging = true; handleMove(e); }, { passive: false });
         window.addEventListener('mousemove', handleMove);
-        window.addEventListener('touchmove', handleMove, {passive: false});
+        window.addEventListener('touchmove', handleMove, { passive: false });
         window.addEventListener('mouseup', () => { dragging = false; joyHandle.style.transform = 'translate(0,0)'; if(player) player.isMoving = false; });
         window.addEventListener('touchend', () => { dragging = false; joyHandle.style.transform = 'translate(0,0)'; if(player) player.isMoving = false; });
 
@@ -240,7 +240,6 @@
                 for(let i=0; i<npcs.length; i++) { for(let j=i+1; j<npcs.length; j++) resolveCollision(npcs[i], npcs[j]); }
                 [player, ...npcs].forEach(o => { o.x = Math.max(0.3, Math.min(WORLD_SIZE-0.3, o.x)); o.y = Math.max(0.3, Math.min(WORLD_SIZE-0.3, o.y)); });
             }
-
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             if (player) {
                 const camX = player.x - VIEW_SIZE/2; const camY = player.y - VIEW_SIZE/2;
