@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>社交電池：仙階進化版</title>
+    <style>
+        body { margin: 0; display: flex; flex-direction: column; align-items: center; background: #f0f0f0; font-family: sans-serif; touch-action: none; overflow: hidden; }
+        #game-container { position: relative; width: 300px; height: 300px; border: 2px solid #333; margin-top: 20px; overflow: hidden; background: white; box-shadow: 0 4px 10px rgba(0,0,0,0.2); }
+        canvas { display: block; }
+        #ui-layer { position: absolute; top: 10px; right: 10px; display: none; align-items: center; background: rgba(255,255,255,0.8); padding: 5px; border-radius: 5px; }
+        #battery { width: 40px; height: 18px; border: 2px solid #333; position: relative; display: flex; }
+        .cell { flex: 1; margin: 1px; background: #4CAF50; }
+        #timer { position: absolute; top: 10px; left: 10px; font-weight: bold; background: rgba(255,255,255,0.8); padding: 2px 5px; display: none; border-radius: 3px; }
+        #joystick-container { width: 120px; height: 120px; background: rgba(0,0,0,0.1); border-radius: 50%; margin: 30px; position: relative; border: 2px solid #ccc; }
+        #joystick-handle { width: 50px; height: 50px; background: rgba(0,0,0,0.5); border-radius: 50%; position: absolute; top: 35px; left: 35px; pointer-events: none; }
+        #overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); color: white; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; z-index: 10; }
+        .stat-line { font-size: 14px; margin: 2px 0; color: #bbb; }
+        #rank-display { font-size: 22px; font-weight: bold; color: #FFD700; margin: 10px 0; }
+        #rank-desc { font-size: 16px; color: #FFA500; margin-bottom: 10px; font-style: italic; }
+        button { margin-top: 15px; padding: 12px 24px; font-size: 18px; cursor: pointer; border-radius: 8px; border: none; background: #4CAF50; color: white; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div id="game-container">
+        <div id="timer">0s</div>
+        <div id="ui-layer"><div id="battery"><div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="cell"></div></div></div>
+        <canvas id="gameCanvas" width="300" height="300"></canvas>
+        <div id="overlay">
+            <h2 id="msg">仙人下凡</h2>
+            <div id="stats-content">
+                <p id="result">點擊按鈕開始修煉</p>
+            </div>
+            <button id="actionBtn" onclick="startGame()">本仙人下凡了哈哈哈</button>
+        </div>
+    </div>
+    <div id="joystick-container"><div id="joystick-handle"></div></div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const joyHandle = document.getElementById('joystick-handle');
+        const WORLD_SIZE = 40; const VIEW_SIZE = 10; const SCALE = canvas.width / VIEW_SIZE;
+        const RADIUS = 0.3;
+
+        let player, npcs, battery, startTime, gameActive = false, items, npcSpawnTimer, idleTimer, audioCtx;
+
+        // --- 根據最新規則計算仙階 ---
+        function getRankInfo(s) {
+            if (s <= 30) return { title: "凡間路人", desc: "（修為尚淺）" };
+            if (s <= 50) return { title: "初級仙人", desc: "（初窺門徑）" };
+            if (s <= 80) return { title: "結丹仙人", desc: "（小有成就）" };
+            if (s <= 130) return { title: "元嬰大能", desc: "（凡人難近）" };
+            return { title: "大乘至尊", desc: "（超脫塵世）" };
+        }
+
+        function playHiChirp(pitch) {
+            if (!audioCtx) return;
+            const now = audioCtx.currentTime;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'square';
+            osc.frequency.setValueAtTime(800 * pitch, now);
+            osc.frequency.exponentialRampToValueAtTime(1300 * pitch, now + 0.08);
+            gain.gain.setValueAtTime(0.04, now);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+            osc.connect(gain); gain.connect(audioCtx.destination);
+            osc.start(); osc.stop(now + 0.08);
+        }
+
+        function startBGM() {
+            const tempo = 110; const secondsPerBeat = 60 / tempo;
+            function playNote(freq, start, duration, vol) {
+                const osc = audioCtx.createOscillator(); const gain = audioCtx.createGain();
+                osc.type = 'triangle'; osc.frequency.setValueAtTime(freq, start);
+                gain.gain.setValueAtTime(0, start);
+                gain.gain.linearRampToValueAtTime(vol, start + 0.05);
+                gain.gain.exponentialRampToValueAtTime(0.001, start + duration);
+                osc.connect(gain); gain.connect(audioCtx.destination);
+                osc.start(start); osc.stop(start + duration);
+            }
+            const scale = [261.63, 329.63, 392.00, 493.88]; let step = 0;
+            const loop = () => {
+                if (!gameActive) return;
+                let now = audioCtx.currentTime;
+                playNote(scale[step % 4] / 2, now, secondsPerBeat * 2, 0.03);
+                playNote(scale[(step + 2) % 4], now + secondsPerBeat, secondsPerBeat, 0.01);
+                step++; setTimeout(loop, secondsPerBeat * 1000);
+            };
+            loop();
+        }
+
+        function startGame() {
+            if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            player = { x: 20, y: 20, speed: 4, angle: 0, walkCycle: 0, isMoving: false, color: "black", isGreeting: false, greetTimer: 0 };
+            npcs = []; for(let i=0; i<8; i++) npcs.push(createNPC(true));
+            items = []; battery = 5; startTime = Date.now(); npcSpawnTimer = 0; idleTimer = 0;
+            gameActive = true;
+            document.getElementById('overlay').style.display = 'none';
+            document.getElementById('ui-layer').style.display = 'flex';
+            document.getElementById('timer').style.display = 'block';
+            updateBatteryUI(); startBGM();
+        }
+
+        function createNPC(isInit = false) {
+            let rx, ry, dist;
+            do { rx = Math.random() * WORLD_SIZE; ry = Math.random() * WORLD_SIZE; dist = player ? Math.hypot(rx - player.x, ry - player.y) : 20;
+            } while (dist < (isInit ? 5 : 10));
+            return { x: rx, y: ry, baseSpeed: 1.0 + Math.random(), angle: Math.random()*Math.PI*2, walkCycle: Math.random()*100, color: "#888", timer: 0, isGreeting: false, greetTimer: 0, cooldown: 0 };
+        }
+
+        function updateBatteryUI() {
+            const cells = document.querySelectorAll('.cell');
+            cells.forEach((c, i) => c.style.visibility = i < battery ? 'visible' : 'hidden');
+        }
+
+        let joyX = 0, joyY = 0, dragging = false;
+        const handleMove = (e) => {
+            if (!gameActive || player.isGreeting) return;
+            const rect = document.getElementById('joystick-container').getBoundingClientRect();
+            const touch = (e.touches && e.touches) || e;
+            let dx = touch.clientX - (rect.left + rect.width/2);
+            let dy = touch.clientY - (rect.top + rect.height/2);
+            const dist = Math.sqrt(dx*dx + dy*dy);
+            if (dist > rect.width/2) { dx *= (rect.width/2)/dist; dy *= (rect.width/2)/dist; }
+            if (dragging) {
+                joyX = dx / (rect.width/2); joyY = dy / (rect.width/2);
+                joyHandle.style.transform = `translate(${dx}px, ${dy}px)`;
+                player.isMoving = dist > 5;
+                if (player.isMoving) player.angle = Math.atan2(dy, dx);
+            }
+        };
+
+        const joyCont = document.getElementById('joystick-container');
+        joyCont.addEventListener('mousedown', () => dragging = true);
+        joyCont.addEventListener('touchstart', (e) => { dragging = true; handleMove(e); e.preventDefault(); }, {passive: false});
+        window.addEventListener('mousemove', handleMove);
+        window.addEventListener('touchmove', handleMove, {passive: false});
+        window.addEventListener('mouseup', () => { dragging = false; joyHandle.style.transform = 'translate(0,0)'; if(player) player.isMoving = false; });
+        window.addEventListener('touchend', () => { dragging = false; joyHandle.style.transform = 'translate(0,0)'; if(player) player.isMoving = false; });
+
+        function resolveCollision(a, b) {
+            let dx = b.x - a.x; let dy = b.y - a.y; let dist = Math.hypot(dx, dy);
+            if (dist < RADIUS*2 && dist > 0) {
+                let overlap = (RADIUS*2 - dist)/2;
+                a.x -= (dx/dist)*overlap; a.y -= (dy/dist)*overlap;
+                b.x += (dx/dist)*overlap; b.y += (dy/dist)*overlap;
+            }
+        }
+
+        function drawStickman(x, y, angle, cycle, isMoving, color, isGreeting, isPlayer) {
+            ctx.save();
+            if (isPlayer && isGreeting) { x += (Math.random()-0.5)*8; y += (Math.random()-0.5)*8; }
+            ctx.translate(x, y);
+            ctx.rotate(angle + Math.PI/2);
+            ctx.strokeStyle = color; ctx.lineWidth = 3; ctx.lineCap = "round";
+            const swing = (isMoving || isGreeting) ? Math.sin(cycle)*10 : 0;
+            ctx.beginPath(); ctx.moveTo(-4, 2); ctx.lineTo(-5, 8+swing); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(4, 2); ctx.lineTo(5, 8-swing); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(-7, -1); ctx.lineTo(-11, -swing); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(7, -1); ctx.lineTo(11, swing); ctx.stroke();
+            ctx.beginPath(); ctx.arc(0, 0, 7, 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill();
+            ctx.beginPath(); ctx.lineWidth = 2; ctx.moveTo(0, -5); ctx.lineTo(0, -11); ctx.stroke();
+            if(isGreeting) {
+                ctx.rotate(-(angle + Math.PI/2));
+                ctx.fillStyle = "white"; ctx.strokeStyle = "black"; ctx.lineWidth = 1;
+                ctx.beginPath(); ctx.roundRect(-15, -35, 30, 18, 5); ctx.fill(); ctx.stroke();
+                ctx.fillStyle = "black"; ctx.font = "bold 12px Arial"; ctx.textAlign = "center";
+                ctx.fillText("Hi!", 0, -21);
+            }
+            ctx.restore();
+        }
+
+        function gameLoop() {
+            if (gameActive) {
+                const dt = 0.016;
+                const currentSeconds = Math.floor((Date.now() - startTime)/1000);
+                document.getElementById('timer').innerText = currentSeconds + 's';
+                npcSpawnTimer += dt;
+                if(npcSpawnTimer >= 2) { npcs.push(createNPC()); npcSpawnTimer = 0; }
+                const speedMult = 1 + (npcs.length / 40);
+
+                if (player.isGreeting) {
+                    player.greetTimer -= dt; player.walkCycle += 25 * dt;
+                    if (player.greetTimer <= 0) player.isGreeting = false;
+                } else if (player.isMoving) {
+                    player.x += joyX * player.speed * dt; player.y += joyY * player.speed * dt;
+                    player.walkCycle += 10 * dt; idleTimer = 0;
+                } else { idleTimer += dt; }
+
+                if(items.length < 2 && Math.random() < 0.005) items.push({ x: Math.random()*WORLD_SIZE, y: Math.random()*WORLD_SIZE });
+                items = items.filter(item => {
+                    if (Math.hypot(player.x - item.x, player.y - item.y) < 0.7) { 
+                        if(battery < 5) battery++; updateBatteryUI(); 
+                        const o = audioCtx.createOscillator(); const g = audioCtx.createGain();
+                        o.frequency.setValueAtTime(880, audioCtx.currentTime); g.gain.setValueAtTime(0.05, audioCtx.currentTime);
+                        o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime+0.1);
+                        return false; 
+                    }
+                    return true;
+                });
+
+                npcs.forEach(npc => {
+                    const curSpd = npc.baseSpeed * speedMult;
+                    if (npc.isGreeting) {
+                        npc.greetTimer -= dt; if (npc.greetTimer <= 0) { npc.isGreeting = false; npc.cooldown = 4; }
+                    } else {
+                        if (npc.cooldown > 0) npc.cooldown -= dt;
+                        let d = Math.hypot(player.x - npc.x, player.y - npc.y);
+                        if (d < 1.1 && npc.cooldown <= 0 && !player.isGreeting) {
+                            npc.isGreeting = player.isGreeting = true;
+                            npc.greetTimer = player.greetTimer = 1.0;
+                            playHiChirp(2.0); setTimeout(() => { if(gameActive) playHiChirp(1.6); }, 200);
+                            battery--; updateBatteryUI();
+                            if(battery <= 0) {
+                                gameActive = false;
+                                const rank = getRankInfo(currentSeconds);
+                                document.getElementById('msg').innerText = "凡間烏煙瘴氣\n本仙人急需閉關";
+                                document.getElementById('stats-content').innerHTML = `
+                                    <div id="rank-display">${rank.title}</div>
+                                    <div id="rank-desc">${rank.desc}</div>
+                                    <p class="stat-line">修煉時間：${currentSeconds} 秒</p>
+                                    <p class="stat-line">凡人數目：${npcs.length} 人</p>
+                                `;
+                                document.getElementById('actionBtn').innerText = "再次下凡";
+                                document.getElementById('overlay').style.display = 'flex';
+                            }
+                        }
+                        if (idleTimer > 2 && d < 6) {
+                            npc.angle = Math.atan2(player.y - npc.y, player.x - npc.x);
+                            npc.x += Math.cos(npc.angle) * curSpd * dt; npc.y += Math.sin(npc.angle) * curSpd * dt;
+                        } else {
+                            npc.timer -= dt; if(npc.timer <= 0) { npc.angle = Math.random()*Math.PI*2; npc.timer = 1+Math.random()*3; }
+                            npc.x += Math.cos(npc.angle)*curSpd*dt; npc.y += Math.sin(npc.angle)*curSpd*dt;
+                        }
+                        npc.walkCycle += 8 * dt;
+                    }
+                    resolveCollision(player, npc);
+                });
+                for(let i=0; i<npcs.length; i++) { for(let j=i+1; j<npcs.length; j++) resolveCollision(npcs[i], npcs[j]); }
+                [player, ...npcs].forEach(o => { o.x = Math.max(0.3, Math.min(WORLD_SIZE-0.3, o.x)); o.y = Math.max(0.3, Math.min(WORLD_SIZE-0.3, o.y)); });
+            }
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            if (player) {
+                const camX = player.x - VIEW_SIZE/2; const camY = player.y - VIEW_SIZE/2;
+                ctx.strokeStyle = "#eee";
+                for(let i=0; i<=WORLD_SIZE; i++) {
+                    let sX = (i - camX)*SCALE; let sY = (i - camY)*SCALE;
+                    ctx.beginPath(); ctx.moveTo(sX, 0); ctx.lineTo(sX, canvas.height); ctx.stroke();
+                    ctx.beginPath(); ctx.moveTo(0, sY); ctx.lineTo(canvas.width, sY); ctx.stroke();
+                }
+                items.forEach(item => { ctx.font = "20px Arial"; ctx.fillText("☕", (item.x-camX)*SCALE - 10, (item.y-camY)*SCALE + 10); });
+                npcs.forEach(npc => { drawStickman((npc.x-camX)*SCALE, (npc.y-camY)*SCALE, npc.angle, npc.walkCycle, !npc.isGreeting, npc.color, npc.isGreeting, false); });
+                drawStickman(canvas.width/2, canvas.height/2, player.angle, player.walkCycle, player.isMoving && !player.isGreeting, player.color, player.isGreeting, true);
+            }
+            requestAnimationFrame(gameLoop);
+        }
+        gameLoop();
+    </script>
+</body>
+</html>

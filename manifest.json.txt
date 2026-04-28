@@ -1,0 +1,13 @@
+{
+  "name": "仙人下凡小遊戲",
+  "short_name": "仙人遊戲",
+  "start_url": "index.html",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#FF9800",
+  "icons": [{
+    "src": "https://flaticon.com",
+    "sizes": "512x512",
+    "type": "image/png"
+  }]
+}
