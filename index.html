@@ -16,7 +16,7 @@
         #joystick-handle { width: 50px; height: 50px; background: rgba(0,0,0,0.5); border-radius: 50%; position: absolute; top: 35px; left: 35px; pointer-events: none; }
         #overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); color: white; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; z-index: 10; }
         .stat-line { font-size: 14px; margin: 2px 0; color: #bbb; }
-        #rank-display { font-size: 20px; font-weight: bold; color: #FFD700; margin: 10px 0; padding: 0 10px; }
+        #rank-display { font-size: 18px; font-weight: bold; color: #FFD700; margin: 10px 0; padding: 0 10px; line-height: 1.4; }
         button { margin-top: 15px; padding: 12px 24px; font-size: 18px; cursor: pointer; border-radius: 8px; border: none; background: #4CAF50; color: white; font-weight: bold; }
         h1 { margin: 0 0 10px 0; font-size: 24px; color: #333; }
     </style>
@@ -45,7 +45,7 @@
         const WORLD_SIZE = 40; const VIEW_SIZE = 10; const SCALE = canvas.width / VIEW_SIZE;
         const RADIUS = 0.3;
 
-        let player, npcs, battery, startTime, gameActive = false, npcSpawnTimer, audioCtx, totalSpawned = 0;
+        let player, npcs, battery, startTime, gameActive = false, items, npcSpawnTimer, audioCtx, totalSpawned = 0;
 
         function getRank(s) {
             if (s <= 50) return "何必呢";
@@ -55,7 +55,6 @@
             return "極度懷疑你chok bug";
         }
 
-        // --- 音樂與音效創作 ---
         function startBGM() {
             const tempo = 100; const secondsPerBeat = 60 / tempo;
             function playNote(freq, start, duration, vol, type='sine') {
@@ -67,13 +66,13 @@
                 osc.connect(gain); gain.connect(audioCtx.destination);
                 osc.start(start); osc.stop(start + duration);
             }
-            const bassline = [130.81, 164.81, 146.83, 196.00]; // C3, E3, D3, G3
+            const bassline = [130.81, 164.81, 146.83, 196.00];
             let step = 0;
             const loop = () => {
                 if (!gameActive) return;
                 let now = audioCtx.currentTime;
-                playNote(bassline[step % 4], now, secondsPerBeat * 2, 0.05); // Bass
-                if (step % 2 === 0) playNote(bassline[step % 4] * 2, now + secondsPerBeat, secondsPerBeat, 0.02, 'triangle'); // Arp
+                playNote(bassline[step % 4], now, secondsPerBeat * 2, 0.05);
+                if (step % 2 === 0) playNote(bassline[step % 4] * 2, now + secondsPerBeat, secondsPerBeat, 0.02, 'triangle');
                 step++;
                 setTimeout(loop, secondsPerBeat * 1000);
             };
@@ -98,7 +97,7 @@
             if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
             if (audioCtx.state === 'suspended') audioCtx.resume();
             player = { x: 20, y: 20, speed: 4, angle: 0, walkCycle: 0, isMoving: false, color: "black", isGreeting: false, greetTimer: 0 };
-            npcs = []; totalSpawned = 0;
+            npcs = []; items = []; totalSpawned = 0;
             for(let i=0; i<10; i++) npcs.push(createNPC(true));
             battery = 5; startTime = Date.now(); npcSpawnTimer = 0;
             gameActive = true;
@@ -128,40 +127,28 @@
             cells.forEach((c, i) => c.style.visibility = i < battery ? 'visible' : 'hidden');
         }
 
-        // --- 核心觸控優化邏輯 ---
         let joyX = 0, joyY = 0, dragging = false;
         const handleMove = (e) => {
             if (!dragging || !gameActive || (player && player.isGreeting)) return;
-            
-            // 觸摸與滑鼠通用座標讀取
             const touch = (e.touches && e.touches[0]) || e;
             const rect = joyCont.getBoundingClientRect();
-            
             let dx = touch.clientX - (rect.left + rect.width / 2);
             let dy = touch.clientY - (rect.top + rect.height / 2);
-            
             const dist = Math.sqrt(dx * dx + dy * dy);
             const limit = rect.width / 2;
-            
             if (dist > limit) { dx *= limit / dist; dy *= limit / dist; }
-            
-            joyX = dx / limit;
-            joyY = dy / limit;
+            joyX = dx / limit; joyY = dy / limit;
             joyHandle.style.transform = `translate(${dx}px, ${dy}px)`;
-            
             if (player) {
                 player.isMoving = dist > 5;
                 if (player.isMoving) player.angle = Math.atan2(dy, dx);
             }
-
-            // 關鍵：防止捲動
             if (e.cancelable) e.preventDefault();
         };
 
         const onStart = (e) => { dragging = true; handleMove(e); };
         const onEnd = () => { dragging = false; joyHandle.style.transform = 'translate(0,0)'; if(player) player.isMoving = false; joyX = 0; joyY = 0; };
 
-        // 監聽器 (手機端 Passive: false 是關鍵)
         joyCont.addEventListener('mousedown', onStart);
         window.addEventListener('mousemove', handleMove);
         window.addEventListener('mouseup', onEnd);
@@ -218,6 +205,19 @@
                     player.walkCycle += 10 * dt;
                 }
 
+                // 咖啡道具生成與碰撞
+                if(items.length < 2 && Math.random() < 0.005) items.push({ x: Math.random()*WORLD_SIZE, y: Math.random()*WORLD_SIZE });
+                items = items.filter(item => {
+                    if (Math.hypot(player.x - item.x, player.y - item.y) < 0.7) { 
+                        if(battery < 5) battery++; updateBatteryUI(); 
+                        const o = audioCtx.createOscillator(); const g = audioCtx.createGain();
+                        o.frequency.setValueAtTime(600, audioCtx.currentTime); g.gain.setValueAtTime(0.05, audioCtx.currentTime);
+                        o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime+0.1);
+                        return false; 
+                    }
+                    return true;
+                });
+
                 npcs.forEach((npc) => {
                     const curSpd = npc.baseSpeed * speedMult;
                     if (npc.isGreeting) {
@@ -257,6 +257,7 @@
                 for(let i=0; i<npcs.length; i++) { for(let j=i+1; j<npcs.length; j++) resolveCollision(npcs[i], npcs[j]); }
                 [player, ...npcs].forEach(o => { o.x = Math.max(0.3, Math.min(WORLD_SIZE-0.3, o.x)); o.y = Math.max(0.3, Math.min(WORLD_SIZE-0.3, o.y)); });
             }
+
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             if (player) {
                 const camX = player.x - VIEW_SIZE/2; const camY = player.y - VIEW_SIZE/2;
@@ -266,6 +267,10 @@
                     ctx.beginPath(); ctx.moveTo(sX, 0); ctx.lineTo(sX, canvas.height); ctx.stroke();
                     ctx.beginPath(); ctx.moveTo(0, sY); ctx.lineTo(canvas.width, sY); ctx.stroke();
                 }
+                // 畫咖啡
+                items.forEach(item => {
+                    ctx.font = "20px Arial"; ctx.fillText("☕", (item.x-camX)*SCALE - 10, (item.y-camY)*SCALE + 10);
+                });
                 npcs.forEach(npc => { drawStickman((npc.x-camX)*SCALE, (npc.y-camY)*SCALE, npc.angle, npc.walkCycle, !npc.isGreeting, npc.color, npc.isGreeting, false); });
                 drawStickman(canvas.width/2, canvas.height/2, player.angle, player.walkCycle, player.isMoving && !player.isGreeting, player.color, player.isGreeting, true);
             }
