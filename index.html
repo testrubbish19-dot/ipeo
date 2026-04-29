@@ -41,6 +41,7 @@
         const canvas = document.getElementById('gameCanvas');
         const ctx = canvas.getContext('2d');
         const joyHandle = document.getElementById('joystick-handle');
+        const joyCont = document.getElementById('joystick-container');
         const WORLD_SIZE = 40; const VIEW_SIZE = 10; const SCALE = canvas.width / VIEW_SIZE;
         const RADIUS = 0.3;
 
@@ -52,6 +53,31 @@
             if (s <= 130) return "得個避字有用咩";
             if (s <= 300) return "你好努力㗎啦不過都係咁啫";
             return "極度懷疑你chok bug";
+        }
+
+        // --- 音樂與音效創作 ---
+        function startBGM() {
+            const tempo = 100; const secondsPerBeat = 60 / tempo;
+            function playNote(freq, start, duration, vol, type='sine') {
+                const osc = audioCtx.createOscillator(); const gain = audioCtx.createGain();
+                osc.type = type; osc.frequency.setValueAtTime(freq, start);
+                gain.gain.setValueAtTime(0, start);
+                gain.gain.linearRampToValueAtTime(vol, start + 0.1);
+                gain.gain.exponentialRampToValueAtTime(0.001, start + duration);
+                osc.connect(gain); gain.connect(audioCtx.destination);
+                osc.start(start); osc.stop(start + duration);
+            }
+            const bassline = [130.81, 164.81, 146.83, 196.00]; // C3, E3, D3, G3
+            let step = 0;
+            const loop = () => {
+                if (!gameActive) return;
+                let now = audioCtx.currentTime;
+                playNote(bassline[step % 4], now, secondsPerBeat * 2, 0.05); // Bass
+                if (step % 2 === 0) playNote(bassline[step % 4] * 2, now + secondsPerBeat, secondsPerBeat, 0.02, 'triangle'); // Arp
+                step++;
+                setTimeout(loop, secondsPerBeat * 1000);
+            };
+            loop();
         }
 
         function playHiChirp(pitch) {
@@ -80,6 +106,7 @@
             document.getElementById('ui-layer').style.display = 'flex';
             document.getElementById('timer').style.display = 'block';
             updateBatteryUI();
+            startBGM();
         }
 
         function createNPC(isInit = false) {
@@ -87,10 +114,7 @@
             let rx, ry, dist;
             do { rx = Math.random() * WORLD_SIZE; ry = Math.random() * WORLD_SIZE; dist = player ? Math.hypot(rx - player.x, ry - player.y) : 20;
             } while (dist < (isInit ? 5 : 10));
-            
-            // 每隔一個 NPC 設為追蹤者
             let isChaser = (totalSpawned % 2 === 0);
-            
             return { 
                 x: rx, y: ry, baseSpeed: 1.0 + Math.random(), angle: Math.random()*Math.PI*2, 
                 walkCycle: Math.random()*100, color: "#888", timer: 0, 
@@ -104,31 +128,46 @@
             cells.forEach((c, i) => c.style.visibility = i < battery ? 'visible' : 'hidden');
         }
 
+        // --- 核心觸控優化邏輯 ---
         let joyX = 0, joyY = 0, dragging = false;
-        const joyCont = document.getElementById('joystick-container');
-
         const handleMove = (e) => {
-            if (!dragging || !gameActive || player.isGreeting) return;
-            if (e.cancelable) e.preventDefault();
-            const touch = e.touches ? e.touches : e;
+            if (!dragging || !gameActive || (player && player.isGreeting)) return;
+            
+            // 觸摸與滑鼠通用座標讀取
+            const touch = (e.touches && e.touches[0]) || e;
             const rect = joyCont.getBoundingClientRect();
+            
             let dx = touch.clientX - (rect.left + rect.width / 2);
             let dy = touch.clientY - (rect.top + rect.height / 2);
+            
             const dist = Math.sqrt(dx * dx + dy * dy);
             const limit = rect.width / 2;
+            
             if (dist > limit) { dx *= limit / dist; dy *= limit / dist; }
-            joyX = dx / limit; joyY = dy / limit;
+            
+            joyX = dx / limit;
+            joyY = dy / limit;
             joyHandle.style.transform = `translate(${dx}px, ${dy}px)`;
-            player.isMoving = dist > 5;
-            if (player.isMoving) player.angle = Math.atan2(dy, dx);
+            
+            if (player) {
+                player.isMoving = dist > 5;
+                if (player.isMoving) player.angle = Math.atan2(dy, dx);
+            }
+
+            // 關鍵：防止捲動
+            if (e.cancelable) e.preventDefault();
         };
 
-        joyCont.addEventListener('mousedown', (e) => { dragging = true; handleMove(e); });
-        joyCont.addEventListener('touchstart', (e) => { dragging = true; handleMove(e); }, { passive: false });
+        const onStart = (e) => { dragging = true; handleMove(e); };
+        const onEnd = () => { dragging = false; joyHandle.style.transform = 'translate(0,0)'; if(player) player.isMoving = false; joyX = 0; joyY = 0; };
+
+        // 監聽器 (手機端 Passive: false 是關鍵)
+        joyCont.addEventListener('mousedown', onStart);
         window.addEventListener('mousemove', handleMove);
-        window.addEventListener('touchmove', handleMove, { passive: false });
-        window.addEventListener('mouseup', () => { dragging = false; joyHandle.style.transform = 'translate(0,0)'; if(player) player.isMoving = false; });
-        window.addEventListener('touchend', () => { dragging = false; joyHandle.style.transform = 'translate(0,0)'; if(player) player.isMoving = false; });
+        window.addEventListener('mouseup', onEnd);
+        joyCont.addEventListener('touchstart', (e) => { onStart(e); }, { passive: false });
+        window.addEventListener('touchmove', (e) => { handleMove(e); }, { passive: false });
+        window.addEventListener('touchend', onEnd);
 
         function resolveCollision(a, b) {
             let dx = b.x - a.x; let dy = b.y - a.y; let dist = Math.hypot(dx, dy);
@@ -183,12 +222,7 @@
                     const curSpd = npc.baseSpeed * speedMult;
                     if (npc.isGreeting) {
                         npc.greetTimer -= dt; 
-                        if (npc.greetTimer <= 0) { 
-                            npc.isGreeting = false; 
-                            npc.cooldown = 4; 
-                            // 關鍵修改：打招呼結束後，若是追蹤者則提早清空 chaseTimer
-                            npc.chaseTimer = 0; 
-                        }
+                        if (npc.greetTimer <= 0) { npc.isGreeting = false; npc.cooldown = 4; npc.chaseTimer = 0; }
                     } else {
                         if (npc.cooldown > 0) npc.cooldown -= dt;
                         let d = Math.hypot(player.x - npc.x, player.y - npc.y);
@@ -209,8 +243,6 @@
                                 document.getElementById('overlay').style.display = 'flex';
                             }
                         }
-                        
-                        // 追蹤邏輯
                         if (npc.chaseTimer > 0) {
                             npc.chaseTimer -= dt;
                             npc.angle = Math.atan2(player.y - npc.y, player.x - npc.x);
@@ -225,7 +257,6 @@
                 for(let i=0; i<npcs.length; i++) { for(let j=i+1; j<npcs.length; j++) resolveCollision(npcs[i], npcs[j]); }
                 [player, ...npcs].forEach(o => { o.x = Math.max(0.3, Math.min(WORLD_SIZE-0.3, o.x)); o.y = Math.max(0.3, Math.min(WORLD_SIZE-0.3, o.y)); });
             }
-
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             if (player) {
                 const camX = player.x - VIEW_SIZE/2; const camY = player.y - VIEW_SIZE/2;
